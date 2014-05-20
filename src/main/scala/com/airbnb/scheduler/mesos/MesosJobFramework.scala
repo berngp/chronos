@@ -10,6 +10,7 @@ import org.apache.mesos.{Protos, SchedulerDriver, Scheduler}
 import org.apache.mesos.Protos._
 
 import scala.collection.mutable.HashMap
+import scala.collection.JavaConverters._
 import mesosphere.mesos.util.FrameworkIdUtil
 import com.airbnb.utils.JobDeserializer
 
@@ -51,6 +52,24 @@ class MesosJobFramework @Inject()(
     log.warning("Disconnected")
   }
 
+  def getScalarValueOrElse(opt: Option[Resource], value: Double): Double = {
+    opt match {
+      case Some(resource) =>
+        resource.getScalar.getValue
+      case _ =>
+        value
+    }
+  }
+
+  def getReservedResources(offer: Offer): (Double, Double) = {
+    val resources = offer.getResourcesList.asScala
+    val reservedResources = resources.filter({x => x.hasRole && x.getRole != "*"})
+    (
+      getScalarValueOrElse(reservedResources.find(x => x.getName == "cpus"), 0),
+      getScalarValueOrElse(reservedResources.find(x => x.getName == "mem"), 0)
+    )
+  }
+
   //TODO(FL): Persist the UPDATED task or job into ZK such that on failover / reload, we don't have to step through the
   //          entire task stream.
   @Override
@@ -79,7 +98,13 @@ class MesosJobFramework @Inject()(
         }
       }
     }
-    getNextTask(offers.asScala.toList.sortBy(_.getSlaveLoadHint()))
+
+    // Sorting like this ensures that offers with the most amount of
+    // reserved resources are preferred first over other offers.
+    getNextTask(
+      offers.asScala.toList.sortBy(_.getSlaveLoadHint()).reverse
+        .sortBy(getReservedResources(_)).reverse
+    )
   }
 
   @Override
